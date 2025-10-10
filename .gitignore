@@ -236,3 +236,5 @@ xcuserdata/
 ### Project specific stuff
 *.nii.gz
 *.mha
+
+jobscript.sh
