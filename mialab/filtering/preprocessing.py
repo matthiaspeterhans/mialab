@@ -4,6 +4,7 @@ Image pre-processing aims to improve the image quality (image intensities) for s
 """
 import warnings
 
+import numpy as np
 import pymia.filtering.filter as pymia_fltr
 import SimpleITK as sitk
 
@@ -29,9 +30,42 @@ class ImageNormalization(pymia_fltr.Filter):
         img_arr = sitk.GetArrayFromImage(image)
 
         # todo: normalize the image using numpy
-        warnings.warn('No normalization implemented. Returning unprocessed image.')
+        #warnings.warn('No normalization implemented. Returning unprocessed image.')
 
-        img_out = sitk.GetImageFromArray(img_arr)
+        # normalizes img intensity values so that all subjects are comparable.
+        # MRI intensities are not absolute — scanners and settings vary, so you standardize them.
+        
+        # z-score normalization
+        mean = img_arr.mean()
+        std = img_arr.std()
+        img_norm = (img_arr - mean) / std
+        #img_norm = np.clip(img_norm, -3, 3)
+
+        # use non zero voxels to compute mean and std
+        # brain_voxels = img_arr[img_arr > 0]
+        # mean = brain_voxels.mean()
+        # std = brain_voxels.std()
+        # img_norm = np.zeros_like(img_arr)
+        # img_norm[img_arr > 0] = (img_arr[img_arr > 0] - mean) / std
+        # img_norm = np.clip(img_norm, -2, 2)
+
+        # min max normalization to [0, 1]
+        # brain_voxels = img_arr[img_arr > 0]
+        # min_val = brain_voxels.min()
+        # max_val = brain_voxels.max()
+        # img_norm = np.zeros_like(img_arr)
+        # img_norm[img_arr > 0] = (img_arr[img_arr > 0] - min_val) / (max_val - min_val)
+
+        # robust normalization using median and IQR
+        # brain_voxels = img_arr[img_arr > 0]
+        # median = np.median(brain_voxels)
+        # q75, q25 = np.percentile(brain_voxels, [75 ,25])
+        # iqr = q75 - q25
+        # img_norm = np.zeros_like(img_arr)
+        # img_norm[img_arr > 0] = (img_arr[img_arr > 0] - median) / iqr
+        # img_norm = np.clip(img_norm, -3, 3)
+
+        img_out = sitk.GetImageFromArray(img_norm)
         img_out.CopyInformation(image)
 
         return img_out
@@ -77,8 +111,12 @@ class SkullStripping(pymia_fltr.Filter):
         """
         mask = params.img_mask  # the brain mask
 
-        # todo: remove the skull from the image by using the brain mask
-        warnings.warn('No skull-stripping implemented. Returning unprocessed image.')
+        # todo: remove the skull from the image by using the brain mask (1 = brain, 0 = non-brain)
+        #warnings.warn('No skull-stripping implemented. Returning unprocessed image.')
+
+        # multiply img by mask voxel-wise
+        mask = sitk.Cast(mask, sitk.sitkUInt8)
+        image = sitk.Mask(image, mask)
 
         return image
 
@@ -128,7 +166,7 @@ class ImageRegistration(pymia_fltr.Filter):
 
         # todo: replace this filter by a registration. Registration can be costly, therefore, we provide you the
         # transformation, which you only need to apply to the image!
-        warnings.warn('No registration implemented. Returning unregistered image')
+        #warnings.warn('No registration implemented. Returning unregistered image')
 
         atlas = params.atlas
         transform = params.transformation
@@ -137,6 +175,13 @@ class ImageRegistration(pymia_fltr.Filter):
         # note: if you are interested in registration, and want to test it, have a look at
         # pymia.filtering.registration.MultiModalRegistration. Think about the type of registration, i.e.
         # do you want to register to an atlas or inter-subject? Or just ask us, we can guide you ;-)
+        
+        # placing rotated or scaled img exactly over a standard template by applying geometric transformation
+        if is_ground_truth:
+            interp = sitk.sitkNearestNeighbor
+        else:
+            interp = sitk.sitkLinear
+        image = sitk.Resample(image, atlas, transform, interp, 0.0, image.GetPixelID())
 
         return image
 

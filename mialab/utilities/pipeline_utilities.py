@@ -6,9 +6,9 @@ import warnings
 
 import numpy as np
 import pymia.data.conversion as conversion
-import pymia.filtering.filter as fltr
 import pymia.evaluation.evaluator as eval_
 import pymia.evaluation.metric as metric
+import pymia.filtering.filter as fltr
 import SimpleITK as sitk
 
 import mialab.data.structure as structure
@@ -244,10 +244,10 @@ def pre_process(id_: str, paths: dict, **kwargs) -> structure.BrainImage:
     img.image_properties = conversion.ImageProperties(img.images[structure.BrainImageTypes.T1w])
 
     # extract the features
-    feature_extractor = FeatureExtractor(img, **kwargs)
-    img = feature_extractor.execute()
+    # feature_extractor = FeatureExtractor(img, **kwargs)
+    # img = feature_extractor.execute()
 
-    img.feature_images = {}  # we free up memory because we only need the img.feature_matrix
+    # img.feature_images = {}  # we free up memory because we only need the img.feature_matrix
     # for training of the classifier
 
     return img
