@@ -68,7 +68,7 @@ class FeatureExtractor:
             structure.BrainImage: The image with extracted features.
         """
         # todo: add T2w features
-        warnings.warn('No features from T2-weighted image extracted.')
+        #warnings.warn('No features from T2-weighted image extracted.')
 
         if self.coordinates_feature:
             atlas_coordinates = fltr_feat.AtlasCoordinates()
@@ -83,6 +83,15 @@ class FeatureExtractor:
             self.img.feature_images[FeatureImageTypes.T1w_GRADIENT_INTENSITY] = \
                 sitk.GradientMagnitude(self.img.images[structure.BrainImageTypes.T1w])
 
+        # extract T2w features
+        if self.intensity_feature: # Add T2 intensity
+            self.img.feature_images[FeatureImageTypes.T2w_INTENSITY] = \
+                self.img.images[structure.BrainImageTypes.T2w]
+
+        if self.gradient_intensity_feature: # Add T2 gradient magnitude
+            self.img.feature_images[FeatureImageTypes.T2w_GRADIENT_INTENSITY] = \
+                sitk.GradientMagnitude(self.img.images[structure.BrainImageTypes.T2w])
+    
         self._generate_feature_matrix()
 
         return self.img
@@ -244,10 +253,10 @@ def pre_process(id_: str, paths: dict, **kwargs) -> structure.BrainImage:
     img.image_properties = conversion.ImageProperties(img.images[structure.BrainImageTypes.T1w])
 
     # extract the features
-    # feature_extractor = FeatureExtractor(img, **kwargs)
-    # img = feature_extractor.execute()
+    feature_extractor = FeatureExtractor(img, **kwargs)
+    img = feature_extractor.execute()
 
-    # img.feature_images = {}  # we free up memory because we only need the img.feature_matrix
+    img.feature_images = {}  # we free up memory because we only need the img.feature_matrix
     # for training of the classifier
 
     return img
