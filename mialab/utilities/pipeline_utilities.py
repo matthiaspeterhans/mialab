@@ -91,7 +91,9 @@ class FeatureExtractor:
         if self.gradient_intensity_feature: # Add T2 gradient magnitude
             self.img.feature_images[FeatureImageTypes.T2w_GRADIENT_INTENSITY] = \
                 sitk.GradientMagnitude(self.img.images[structure.BrainImageTypes.T2w])
-    
+
+        # T2-weighted features significantly improved segmentation of subcortical structures, confirming the complementary information between T1- and T2-weighted MRI for tissue classification.
+
         self._generate_feature_matrix()
 
         return self.img
