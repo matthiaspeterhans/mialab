@@ -300,9 +300,17 @@ def init_evaluator() -> eval_.Evaluator:
     """
 
     # initialize metrics
-    metrics = [metric.DiceCoefficient()]
+    metrics = [
+        metric.DiceCoefficient(),             # Overlap-based
+        metric.JaccardCoefficient(),          # Overlap-based
+        metric.HausdorffDistance(),           # Distance-based
+        #metric.Precision(),                   # True positive rate among predicted positives
+        #metric.Recall(),                      # Sensitivity (true positive rate)
+        #metric.Specificity(),                 # True negative rate
+        #metric.AverageSurfaceDistance(),      # Distance-based
+    ]
     # todo: add hausdorff distance, 95th percentile (see metric.HausdorffDistance)
-    warnings.warn('Initialized evaluation with the Dice coefficient. Do you know other suitable metrics?')
+    #warnings.warn('Initialized evaluation with the Dice coefficient. Do you know other suitable metrics?')
 
     # define the labels to evaluate
     labels = {1: 'WhiteMatter',
