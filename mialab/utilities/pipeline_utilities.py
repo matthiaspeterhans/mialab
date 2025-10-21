@@ -216,6 +216,17 @@ def pre_process(id_: str, paths: dict, **kwargs) -> structure.BrainImage:
         pipeline_t1.add_filter(fltr_prep.SkullStripping())
         pipeline_t1.set_param(fltr_prep.SkullStrippingParameters(img.images[structure.BrainImageTypes.BrainMask]),
                               len(pipeline_t1.filters) - 1)
+    if kwargs.get('histogram_matching_pre', False):
+        pipeline_t1.add_filter(fltr_prep.HistogramMatching())
+        pipeline_t1.set_param(
+            fltr_prep.HistogramMatchingParameters(
+                reference_image=atlas_t1,
+                histogram_levels=256,
+                match_points=5,
+                threshold_at_mean_intensity=False
+            ),
+            len(pipeline_t1.filters) - 1
+        )
     if kwargs.get('normalization_pre', False):
         pipeline_t1.add_filter(fltr_prep.ImageNormalization())
 
@@ -232,6 +243,17 @@ def pre_process(id_: str, paths: dict, **kwargs) -> structure.BrainImage:
         pipeline_t2.add_filter(fltr_prep.SkullStripping())
         pipeline_t2.set_param(fltr_prep.SkullStrippingParameters(img.images[structure.BrainImageTypes.BrainMask]),
                               len(pipeline_t2.filters) - 1)
+    if kwargs.get('histogram_matching_pre', False):
+        pipeline_t2.add_filter(fltr_prep.HistogramMatching())
+        pipeline_t2.set_param(
+            fltr_prep.HistogramMatchingParameters(
+                reference_image=atlas_t2,
+                histogram_levels=256,
+                match_points=5,
+                threshold_at_mean_intensity=False
+            ),
+            len(pipeline_t2.filters) - 1
+        )
     if kwargs.get('normalization_pre', False):
         pipeline_t2.add_filter(fltr_prep.ImageNormalization())
 
