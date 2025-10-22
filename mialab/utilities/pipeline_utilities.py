@@ -91,7 +91,9 @@ class FeatureExtractor:
         if self.gradient_intensity_feature: # Add T2 gradient magnitude
             self.img.feature_images[FeatureImageTypes.T2w_GRADIENT_INTENSITY] = \
                 sitk.GradientMagnitude(self.img.images[structure.BrainImageTypes.T2w])
-    
+
+        # T2-weighted features significantly improved segmentation of subcortical structures, confirming the complementary information between T1- and T2-weighted MRI for tissue classification.
+
         self._generate_feature_matrix()
 
         return self.img
@@ -298,9 +300,17 @@ def init_evaluator() -> eval_.Evaluator:
     """
 
     # initialize metrics
-    metrics = [metric.DiceCoefficient()]
+    metrics = [
+        metric.DiceCoefficient(),             # Overlap-based
+        metric.JaccardCoefficient(),          # Overlap-based
+        metric.HausdorffDistance(),           # Distance-based
+        #metric.Precision(),                   # True positive rate among predicted positives
+        #metric.Recall(),                      # Sensitivity (true positive rate)
+        #metric.Specificity(),                 # True negative rate
+        #metric.AverageSurfaceDistance(),      # Distance-based
+    ]
     # todo: add hausdorff distance, 95th percentile (see metric.HausdorffDistance)
-    warnings.warn('Initialized evaluation with the Dice coefficient. Do you know other suitable metrics?')
+    #warnings.warn('Initialized evaluation with the Dice coefficient. Do you know other suitable metrics?')
 
     # define the labels to evaluate
     labels = {1: 'WhiteMatter',

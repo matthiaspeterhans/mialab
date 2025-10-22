@@ -4,7 +4,7 @@ Image post-processing aims to alter images such that they depict a desired repre
 """
 import warnings
 
-# import numpy as np
+import numpy as np
 # import pydensecrf.densecrf as crf
 # import pydensecrf.utils as crf_util
 import pymia.filtering.filter as pymia_fltr
@@ -30,9 +30,54 @@ class ImagePostProcessing(pymia_fltr.Filter):
         """
 
         # todo: replace this filter by a post-processing - or do we need post-processing at all?
-        warnings.warn('No post-processing implemented. Can you think about something?')
+        #warnings.warn('No post-processing implemented. Can you think about something?')
 
-        return image
+
+        ### converts entire segmentation to binary and merges everything and return a single mask -> class info is lost
+        # # remove small connected components
+        # img = sitk.Cast(image, sitk.sitkUInt8) #sitkUInt8 applies bianry thresholding
+        # cc = sitk.ConnectedComponent(img)
+        # stats = sitk.LabelShapeStatisticsImageFilter()
+        # stats.Execute(cc)
+        # image = sitk.Image(cc.GetSize(), sitk.sitkUInt8)
+        # image.CopyInformation(cc) # copy spatial info from connected components image
+        # min_size = 100 # min voxel count per connected component
+        # for label in stats.GetLabels():
+        #     if stats.GetPhysicalSize(label) >= min_size:
+        #         image = image | sitk.Equal(cc, label)
+        # # fill small holes to make structures smoother
+        # image = sitk.BinaryMorphologicalClosing(image, [1, 1, 1])
+        # #image = sitk.BinaryMorphologicalOpening(image, [1, 1, 1])
+        # image.CopyInformation(img) # copy spatial info from input img
+
+        ### keeps label identities, removes small disconnected noise per label and smooths final result slightly
+        cleaned = sitk.Image(image.GetSize(), sitk.sitkUInt8)
+        cleaned.CopyInformation(image)
+        arr = sitk.GetArrayFromImage(image)
+        labels = np.unique(arr)
+        min_size = 100  # min voxel count per connected component
+        for label in labels:
+            if label == 0:
+                continue  # skip background
+            # binary mask for this label
+            mask = sitk.Equal(image, int(label))
+            # connected components per label
+            cc = sitk.ConnectedComponent(sitk.Cast(mask, sitk.sitkUInt8))
+            stats = sitk.LabelShapeStatisticsImageFilter()
+            stats.Execute(cc)
+            for cc_label in stats.GetLabels():
+                if stats.GetNumberOfPixels(cc_label) >= min_size:
+                    cleaned = cleaned + int(label) * sitk.Cast(sitk.Equal(cc, cc_label), sitk.sitkUInt8)
+        # small morphological closing for smoother edges
+        cleaned = sitk.BinaryMorphologicalClosing(cleaned, [1, 1, 1])
+
+        # possible post-processing ideas:
+        # DenseCRF (for fine edge refinement)
+        # Top-hat / bottom-hat filters (to highlight small bright/dark regions)
+        # Manual correction tools (interactive brushing via ITK-SNAP or 3D Slicer)
+        # Quantitative evaluation (compare Dice improvements pre- vs post-processing)
+
+        return cleaned
 
     def __str__(self):
         """Gets a printable string representation.
