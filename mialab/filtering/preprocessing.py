@@ -193,3 +193,47 @@ class ImageRegistration(pymia_fltr.Filter):
         """
         return 'ImageRegistration:\n' \
             .format(self=self)
+
+class HistogramMatchingParameters(pymia_fltr.FilterParams):
+    def __init__(self,
+                 reference_image: sitk.Image,
+                 histogram_levels: int = 256,
+                 match_points: int = 10,
+                 threshold_at_mean_intensity: bool = True):
+        """
+        Args:
+            reference_image: Referece Image (e.g. Atlas-T1 or Atlas-T2).
+            histogram_levels: Number of histogram levels.
+            match_points: Number of match points.
+            threshold_at_mean_intensity: Values < mean intensity are ignored.
+        """
+        self.reference_image = reference_image
+        self.histogram_levels = histogram_levels
+        self.match_points = match_points
+        self.threshold_at_mean_intensity = threshold_at_mean_intensity
+
+class HistogramMatching(pymia_fltr.Filter):
+
+    def __init__(self):
+        super().__init__()
+
+    def execute(self, image: sitk.Image, params: HistogramMatchingParameters = None) -> sitk.Image:
+        if params is None or params.reference_image is None:
+            raise ValueError("HistogramMatching: reference_image must be set.")
+        img_in  = sitk.Cast(image, sitk.sitkFloat32)
+        ref_in  = sitk.Cast(params.reference_image, sitk.sitkFloat32)
+
+        hm = sitk.HistogramMatchingImageFilter()
+        hm.SetNumberOfHistogramLevels(params.histogram_levels)
+        hm.SetNumberOfMatchPoints(params.match_points)
+        hm.SetThresholdAtMeanIntensity(params.threshold_at_mean_intensity)
+
+        out = hm.Execute(img_in, ref_in)
+        out.CopyInformation(image)
+
+        out = sitk.Cast(out, image.GetPixelID())
+        return out
+
+    def __str__(self):
+        return 'HistogramMatching:\n' \
+            .format(self=self)
