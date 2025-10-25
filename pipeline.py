@@ -33,7 +33,8 @@ LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.RegistrationTransform]  # the list of data we will load
 
 
-def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str):
+def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str,
+         test_mode: str = 'all'):
     """Brain tissue segmentation using decision forests.
 
     The main routine executes the medical image analysis pipeline:
@@ -73,21 +74,31 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     data_train = np.concatenate([img.feature_matrix[0] for img in images])
     labels_train = np.concatenate([img.feature_matrix[1] for img in images]).squeeze()
 
-    #warnings.warn('Random forest parameters not properly set.')
-    # forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
-    #                                             n_estimators=1,
-    #                                             max_depth=5)
+    if test_mode == 'one_vs_rest':
+        # one model per label (binary classifiers: label vs rest)
+        label_keys = sorted(putil.labels.keys())
+        models = {}
+        for lab in label_keys:
+            y_binary = (labels_train == lab).astype(np.uint8)
+            clf = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
+                                                    n_estimators=50,
+                                                    max_depth=20,
+                                                    n_jobs=-1,
+                                                    random_state=42)
+            start_time = timeit.default_timer()
+            clf.fit(data_train, y_binary)
+            print(' Trained model for label', lab, ' Time elapsed:', timeit.default_timer() - start_time, 's')
+            models[lab] = clf
+    else:  # test_mode == 'all'
+        forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
+                                                    n_estimators=50,
+                                                    max_depth=20,
+                                                    n_jobs=-1,
+                                                    random_state=42)
 
-    # increasing model capacity
-    forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
-                                            n_estimators=50,
-                                            max_depth=20,
-                                            n_jobs=-1,
-                                            random_state=42)
-
-    start_time = timeit.default_timer()
-    forest.fit(data_train, labels_train)
-    print(' Time elapsed:', timeit.default_timer() - start_time, 's')
+        start_time = timeit.default_timer()
+        forest.fit(data_train, labels_train)
+        print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
     # create a result directory with timestamp
     t = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
@@ -96,7 +107,7 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
 
     print('-' * 5, 'Testing...')
 
-    # initialize evaluator
+    # initialize evaluator 
     evaluator = putil.init_evaluator()
 
     # crawl the training image directories
@@ -116,8 +127,26 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
         print('-' * 10, 'Testing', img.id_)
 
         start_time = timeit.default_timer()
-        predictions = forest.predict(img.feature_matrix[0])
-        probabilities = forest.predict_proba(img.feature_matrix[0])
+        if test_mode == 'one_vs_rest':
+            # positive-class probabilities from each binary model
+            proba_list = []
+            for lab in label_keys:
+                clf = models[lab]
+                proba = clf.predict_proba(img.feature_matrix[0])
+                # probability of positive class (column 1)
+                proba_list.append(proba[:, 1])
+
+            # stack into array shape (n_voxels, n_labels)
+            probabilities = np.vstack(proba_list).T
+
+            # predicted label is the label with highest probability
+            idx = np.argmax(probabilities, axis=1)
+            label_arr = np.array(label_keys, dtype=np.uint8)
+            predictions = label_arr[idx]
+        else: # test_mode == 'all'
+            predictions = forest.predict(img.feature_matrix[0])
+            probabilities = forest.predict_proba(img.feature_matrix[0])
+
         print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
         # convert prediction and probabilities back to SimpleITK images
@@ -162,6 +191,14 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     # clear results such that the evaluator is ready for the next evaluation
     evaluator.clear()
 
+    # Save metadata about the test mode
+    try:
+        mode_file = os.path.join(result_dir, 'mode.txt')
+        with open(mode_file, 'w', encoding='utf-8') as mf:
+            mf.write(f"test_mode: {test_mode}\n")
+    except Exception:
+        warnings.warn('Could not write mode.txt into result directory')
+
 
 if __name__ == "__main__":
     """The program's entry point."""
@@ -198,5 +235,13 @@ if __name__ == "__main__":
         help='Directory with testing data.'
     )
 
+    parser.add_argument(
+        '--test_mode',
+        type=str,
+        choices=['all', 'one_vs_rest'],
+        default='all',
+        help="Testing/training mode: 'all' trains one multi-class model (default); 'one_vs_rest' trains one binary model per label."
+    )
+
     args = parser.parse_args()
-    main(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir)
+    main(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir, args.test_mode)

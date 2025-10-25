@@ -15,7 +15,9 @@ We have set up an entire pipeline to solve this task, specifically:
 
 After you complete the exercises, dive into the 
     
-    pipeline.py 
+    pipeline.py --test_mode all 
+    
+    pipeline.py --test_mode one_vs_rest
 
 script to learn how all of these steps work together. 
 
