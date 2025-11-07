@@ -9,11 +9,11 @@ import sys
 import timeit
 import warnings
 
-import SimpleITK as sitk
-import sklearn.ensemble as sk_ensemble
 import numpy as np
 import pymia.data.conversion as conversion
 import pymia.evaluation.writer as writer
+import SimpleITK as sitk
+import sklearn.ensemble as sk_ensemble
 
 try:
     import mialab.data.structure as structure
@@ -67,7 +67,14 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
                           'gradient_intensity_feature': True}
 
     # load images for training and pre-process
-    images = putil.pre_process_batch(crawler.data, pre_process_params, multi_process=False)
+    try:
+        import multiprocessing
+        multi_process = multiprocessing.cpu_count() > 2
+        print('Using multi-processing with', multiprocessing.cpu_count(), 'cores.')
+    except Exception:
+        multi_process = False
+        print('Using single processing.')
+    images = putil.pre_process_batch(crawler.data, pre_process_params, multi_process=multi_process)
 
     # generate feature matrix and label vector
     data_train = np.concatenate([img.feature_matrix[0] for img in images])
@@ -107,7 +114,7 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
 
     # load images for testing and pre-process
     pre_process_params['training'] = False
-    images_test = putil.pre_process_batch(crawler.data, pre_process_params, multi_process=False)
+    images_test = putil.pre_process_batch(crawler.data, pre_process_params, multi_process=multi_process)
 
     images_prediction = []
     images_probabilities = []
@@ -133,8 +140,7 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
 
     # post-process segmentation and evaluate with post-processing
     post_process_params = {'simple_post': True}
-    images_post_processed = putil.post_process_batch(images_test, images_prediction, images_probabilities,
-                                                     post_process_params, multi_process=True)
+    images_post_processed = putil.post_process_batch(images_test, images_prediction, images_probabilities, post_process_params, multi_process=multi_process)
 
     for i, img in enumerate(images_test):
         evaluator.evaluate(images_post_processed[i], img.images[structure.BrainImageTypes.GroundTruth],
