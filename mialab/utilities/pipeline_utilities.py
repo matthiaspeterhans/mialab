@@ -120,7 +120,9 @@ class FeatureExtractor:
             mask = fltr_feat.RandomizedTrainingMaskGenerator.get_mask(
                 self.img.images[structure.BrainImageTypes.GroundTruth],
                 [0, 1, 2, 3, 4, 5],
-                [0.0003, 0.004, 0.003, 0.04, 0.04, 0.02])
+                [0.0003, 0.004, 0.003, 0.04, 0.04, 0.02]
+                #[0.0, 0.05, 0.05, 0.2, 0.2, 0.1]
+                )
 
             # convert the mask to a logical array where value 1 is False and value 0 is True
             mask = sitk.GetArrayFromImage(mask)
@@ -392,8 +394,18 @@ def post_process_batch(brain_images: t.List[structure.BrainImage], segmentations
     """
     if post_process_params is None:
         post_process_params = {}
-
-    param_list = zip(brain_images, segmentations, probabilities)
+    
+    # Replace None probabilities with dummy image to avoid crashes
+    fixed_probabilities = []
+    for prob, seg in zip(probabilities, segmentations):
+        if prob is None:
+            # Create a dummy zero vector image with 1 component
+            dummy = sitk.Image(seg.GetSize(), sitk.sitkUInt8)
+            dummy.CopyInformation(seg)
+            fixed_probabilities.append(dummy)
+        else:
+            fixed_probabilities.append(prob)
+    param_list = zip(brain_images, segmentations, fixed_probabilities)
     if multi_process:
         pp_images = mproc.MultiProcessor.run(post_process, param_list, post_process_params,
                                              mproc.PostProcessingPickleHelper)

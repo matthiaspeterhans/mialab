@@ -19,12 +19,14 @@ try:
     import mialab.data.structure as structure
     import mialab.utilities.file_access_utilities as futil
     import mialab.utilities.pipeline_utilities as putil
+    from mialab.experiments import hierarchical_model as hmodel
 except ImportError:
     # Append the MIALab root directory to Python path
     sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[0]), '..'))
     import mialab.data.structure as structure
     import mialab.utilities.file_access_utilities as futil
     import mialab.utilities.pipeline_utilities as putil
+    from mialab.experiments import hierarchical_model as hmodel
 
 LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.T2w,
@@ -33,7 +35,7 @@ LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.RegistrationTransform]  # the list of data we will load
 
 
-def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str):
+def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str, model_type: str, debug: bool = False):
     """Brain tissue segmentation using decision forests.
 
     The main routine executes the medical image analysis pipeline:
@@ -51,7 +53,7 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     # load atlas images
     putil.load_atlas_images(data_atlas_dir)
 
-    print('-' * 5, 'Training...')
+    print('-' * 5, f'Training {model_type} model...')
 
     # crawl the training image directories
     crawler = futil.FileSystemDataCrawler(data_train_dir,
@@ -74,8 +76,14 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     except Exception:
         multi_process = False
         print('Using single processing.')
-    images = putil.pre_process_batch(crawler.data, pre_process_params, multi_process=multi_process)
+    images = putil.pre_process_batch(crawler.data, pre_process_params, 
+    multi_process=multi_process)
 
+    if debug:
+        # GT label distribution after preprocessing
+        all_labels = np.concatenate([img.feature_matrix[1].squeeze() for img in images])
+        unique, counts = np.unique(all_labels, return_counts=True)
+        print("GT distribution after preprocessing:", dict(zip(unique, counts)))
     # generate feature matrix and label vector
     data_train = np.concatenate([img.feature_matrix[0] for img in images])
     labels_train = np.concatenate([img.feature_matrix[1] for img in images]).squeeze()
@@ -84,16 +92,33 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     # forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
     #                                             n_estimators=1,
     #                                             max_depth=5)
-
-    # increasing model capacity
-    forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
-                                            n_estimators=50,
-                                            max_depth=20,
-                                            n_jobs=-1,
-                                            random_state=42)
-
     start_time = timeit.default_timer()
-    forest.fit(data_train, labels_train)
+    forest = None
+    forest_large = None
+    forest_small = None
+    if model_type == 'baseline':
+        print('-' * 5, 'Training baseline model...')
+        forest = sk_ensemble.RandomForestClassifier(
+            max_features=images[0].feature_matrix[0].shape[1],
+            n_estimators=50,
+            max_depth=20,
+            n_jobs=-1,
+            random_state=42)
+        forest.fit(data_train, labels_train)
+
+    elif model_type == 'hierarchical':
+        print('-' * 5, 'Training hierarchical model...')
+        forest_large = hmodel.train_large_rf(images, debug=debug)
+
+        # Stage 1 train predictions (needed for Stage 2)
+        train_preds_large = [
+            forest_large.predict(img.feature_matrix[0]) 
+            for img in images
+        ]
+        forest_small = hmodel.train_small_rf(images, train_preds_large, debug=debug)
+
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
     print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
     # create a result directory with timestamp
@@ -123,23 +148,42 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
         print('-' * 10, 'Testing', img.id_)
 
         start_time = timeit.default_timer()
-        predictions = forest.predict(img.feature_matrix[0])
-        probabilities = forest.predict_proba(img.feature_matrix[0])
+        if model_type == 'baseline':
+            predictions = forest.predict(img.feature_matrix[0])
+            probabilities = forest.predict_proba(img.feature_matrix[0])
+            # convert prediction and probabilities back to SimpleITK images
+            image_prediction = conversion.NumpySimpleITKImageBridge.convert(predictions.astype(np.uint8), img.image_properties)
+            image_probabilities = conversion.NumpySimpleITKImageBridge.convert(probabilities, img.image_properties)
+            # evaluate segmentation without post-processing
+            evaluator.evaluate(image_prediction, img.images[structure.BrainImageTypes.GroundTruth], img.id_)
+
+            images_prediction.append(image_prediction)
+            images_probabilities.append(image_probabilities)
+        elif model_type == 'hierarchical':
+            # Stage 1 prediction
+            pred_large = hmodel.predict_large(forest_large, img, debug=debug)
+            # Stage 2 prediction
+            pred_small, small_conf, roi_mask = hmodel.predict_small(forest_small, img, pred_large, debug=debug)
+            # Fuse
+            pred_final = hmodel.fuse_predictions(pred_large, pred_small, small_conf, roi_mask, debug=debug)
+            # Convert to image
+            image_prediction = hmodel.convert_to_image(pred_final, img.image_properties)
+            image_probabilities = None  # not used for simple post-processing
+            evaluator.evaluate(image_prediction,
+                       img.images[structure.BrainImageTypes.GroundTruth],
+                       img.id_)
+            images_prediction.append(image_prediction)
+            images_probabilities.append(None)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
         print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
-        # convert prediction and probabilities back to SimpleITK images
-        image_prediction = conversion.NumpySimpleITKImageBridge.convert(predictions.astype(np.uint8),
-                                                                        img.image_properties)
-        image_probabilities = conversion.NumpySimpleITKImageBridge.convert(probabilities, img.image_properties)
-
-        # evaluate segmentation without post-processing
-        evaluator.evaluate(image_prediction, img.images[structure.BrainImageTypes.GroundTruth], img.id_)
-
-        images_prediction.append(image_prediction)
-        images_probabilities.append(image_probabilities)
-
     # post-process segmentation and evaluate with post-processing
-    post_process_params = {'simple_post': True}
+    if model_type == 'hierarchical':
+        # no post-processing at first while debugging
+        post_process_params = {'simple_post': False}
+    else:
+        post_process_params = {'simple_post': True}
     images_post_processed = putil.post_process_batch(images_test, images_prediction, images_probabilities, post_process_params, multi_process=multi_process)
 
     for i, img in enumerate(images_test):
@@ -204,5 +248,19 @@ if __name__ == "__main__":
         help='Directory with testing data.'
     )
 
+    parser.add_argument(
+        '--model_type',
+        type=str,
+        default='baseline',
+        choices=['baseline', 'per_label', 'grouped', 'hierarchical'],
+        help='Choose which segmentation model to run.'
+    )
+
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug prints during training and testing.'
+    )
+
     args = parser.parse_args()
-    main(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir)
+    main(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir, args.model_type, args.debug)
