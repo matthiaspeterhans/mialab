@@ -20,6 +20,8 @@ try:
     import mialab.utilities.file_access_utilities as futil
     import mialab.utilities.pipeline_utilities as putil
     from mialab.experiments import hierarchical_model as hmodel
+    from mialab.experiments.grouped_random_forest import GroupedRandomForest
+    from mialab.experiments.label_subset_ensemble import LabelSubsetEnsembleRF
 except ImportError:
     # Append the MIALab root directory to Python path
     sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[0]), '..'))
@@ -27,6 +29,8 @@ except ImportError:
     import mialab.utilities.file_access_utilities as futil
     import mialab.utilities.pipeline_utilities as putil
     from mialab.experiments import hierarchical_model as hmodel
+    from mialab.experiments.grouped_random_forest import GroupedRandomForest
+    from mialab.experiments.label_subset_ensemble import LabelSubsetEnsembleRF
 
 LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.T2w,
@@ -116,6 +120,23 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
             for img in images
         ]
         forest_small = hmodel.train_small_rf(images, train_preds_large, debug=debug)
+    
+    elif model_type == 'grouped':
+        forest = GroupedRandomForest(max_features=images[0].feature_matrix[0].shape[1],
+                                 n_estimators_large=50, 
+                                 n_estimators_small=50,
+                                 max_depth=20,
+                                 random_state=42)
+        forest.fit(data_train, labels_train)
+    
+    elif model_type == 'random_subset_ensemble':
+        forest = LabelSubsetEnsembleRF(n_models=8, n_estimators=50, max_depth=20,
+                                    n_jobs=-1,
+                                    random_state=42,
+                                    max_features=images[0].feature_matrix[0].shape[1],
+                                    min_labels_per_model=2,
+                                    max_labels_per_model=5)
+        forest.fit(data_train, labels_train)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -148,7 +169,7 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
         print('-' * 10, 'Testing', img.id_)
 
         start_time = timeit.default_timer()
-        if model_type == 'baseline':
+        if model_type == 'baseline' or model_type == 'grouped' or model_type == 'random_subset_ensemble':
             predictions = forest.predict(img.feature_matrix[0])
             probabilities = forest.predict_proba(img.feature_matrix[0])
             # convert prediction and probabilities back to SimpleITK images
@@ -252,7 +273,7 @@ if __name__ == "__main__":
         '--model_type',
         type=str,
         default='baseline',
-        choices=['baseline', 'per_label', 'grouped', 'hierarchical'],
+        choices=['baseline', 'per_label', 'grouped', 'hierarchical', 'random_subset_ensemble'],
         help='Choose which segmentation model to run.'
     )
 
