@@ -20,6 +20,7 @@ try:
     import mialab.utilities.file_access_utilities as futil
     import mialab.utilities.pipeline_utilities as putil
     from mialab.experiments import hierarchical_model as hmodel
+    from mialab.experiments import per_label_model as plmodel
 except ImportError:
     # Append the MIALab root directory to Python path
     sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[0]), '..'))
@@ -27,6 +28,7 @@ except ImportError:
     import mialab.utilities.file_access_utilities as futil
     import mialab.utilities.pipeline_utilities as putil
     from mialab.experiments import hierarchical_model as hmodel
+    from mialab.experiments import per_label_model as plmodel
 
 LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.T2w,
@@ -117,6 +119,10 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
         ]
         forest_small = hmodel.train_small_rf(images, train_preds_large, debug=debug)
 
+    elif model_type == 'per_label':
+        print('-' * 5, 'Training per-label model...')
+        forest = plmodel.train_all(images, debug=debug)
+
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     print(' Time elapsed:', timeit.default_timer() - start_time, 's')
@@ -174,6 +180,16 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
                        img.id_)
             images_prediction.append(image_prediction)
             images_probabilities.append(None)
+        elif model_type == 'per_label':
+            predictions = plmodel.predict_all(forest, img, debug=debug)
+            # convert prediction and probabilities back to SimpleITK images
+            image_prediction = conversion.NumpySimpleITKImageBridge.convert(predictions.astype(np.uint8), img.image_properties)
+            image_probabilities = None  # not used for simple post-processing
+            # evaluate segmentation without post-processing
+            evaluator.evaluate(image_prediction, img.images[structure.BrainImageTypes.GroundTruth], img.id_)
+
+            images_prediction.append(image_prediction)
+            images_probabilities.append(image_probabilities)
         else:
             raise ValueError(f"Unknown model type: {model_type}")
         print(' Time elapsed:', timeit.default_timer() - start_time, 's')
@@ -211,6 +227,14 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
 
     # clear results such that the evaluator is ready for the next evaluation
     evaluator.clear()
+
+    # Save metadata about the test mode
+    try:
+        mode_file = os.path.join(result_dir, 'model.txt')
+        with open(mode_file, 'w', encoding='utf-8') as mf:
+            mf.write(f"Model_type: {model_type}\n")
+    except Exception:
+        warnings.warn('Could not write model.txt into result directory')
 
 
 if __name__ == "__main__":
