@@ -10,6 +10,7 @@ import timeit
 import warnings
 
 import numpy as np
+import pandas as pd
 import pymia.data.conversion as conversion
 import pymia.evaluation.writer as writer
 import SimpleITK as sitk
@@ -38,8 +39,32 @@ LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.BrainMask,
                 structure.BrainImageTypes.RegistrationTransform]  # the list of data we will load
 
+def main_wrapper(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str, model_type: str, debug: bool = False, seed: int = 42, multi_seed_runs: int = 1):
+    """Wrapper that allows multi-seed experiments."""
+    all_results = [] # aggregated list of rows to write to CSV
+    for run_idx in range(multi_seed_runs):
+        current_seed = seed + run_idx
+        print(f"\n========== Running seed {current_seed} ({run_idx+1}/{multi_seed_runs}) ==========\n")
+        np.random.seed(current_seed)
+        # run the original pipeline (but modified to RETURN results)
+        detailed_rows = main_single_run(
+            result_dir,
+            data_atlas_dir,
+            data_train_dir,
+            data_test_dir,
+            model_type,
+            debug,
+            current_seed,
+            multi_seed_runs
+        )
+        all_results.extend(detailed_rows)
+    df = pd.DataFrame(all_results)
 
-def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str, model_type: str, debug: bool = False):
+    out_path = os.path.join(result_dir, "multi_seed_results.csv")
+    df.to_csv(out_path, index=False)
+    print(f"\nSaved aggregated results to:\n{out_path}")
+
+def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str, model_type: str, debug: bool = False, seed: int = 42, multi_seed_runs: int = 1):
     """Brain tissue segmentation using decision forests.
 
     The main routine executes the medical image analysis pipeline:
@@ -101,7 +126,6 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     forest_large = None
     forest_small = None
     if model_type == 'baseline':
-        print('-' * 5, 'Training baseline model...')
         forest = sk_ensemble.RandomForestClassifier(
             max_features=images[0].feature_matrix[0].shape[1],
             n_estimators=50,
@@ -111,7 +135,6 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
         forest.fit(data_train, labels_train)
 
     elif model_type == 'hierarchical':
-        print('-' * 5, 'Training hierarchical model...')
         forest_large = hmodel.train_large_rf(images, debug=debug)
 
         # Stage 1 train predictions (needed for Stage 2)
@@ -140,12 +163,17 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
-    print(' Time elapsed:', timeit.default_timer() - start_time, 's')
+    if debug:
+        print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
-    # create a result directory with timestamp
-    t = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    result_dir = os.path.join(result_dir, t)
-    os.makedirs(result_dir, exist_ok=True)
+    save_segmentations = (multi_seed_runs == 1) # create result directory only if saving segmentations
+    if save_segmentations:
+        # create a result directory with timestamp
+        t = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + f"_seed_{seed}"
+        result_dir = os.path.join(result_dir, t)
+        os.makedirs(result_dir, exist_ok=True)
+    else:
+        result_dir = None  # segmentations will not be saved
 
     print('-' * 5, 'Testing...')
 
@@ -197,7 +225,8 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
             images_probabilities.append(None)
         else:
             raise ValueError(f"Unknown model type: {model_type}")
-        print(' Time elapsed:', timeit.default_timer() - start_time, 's')
+        if debug:
+            print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
     # post-process segmentation and evaluate with post-processing
     if model_type == 'hierarchical':
@@ -212,27 +241,51 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
                            img.id_ + '-PP')
 
         # save results
-        sitk.WriteImage(images_prediction[i], os.path.join(result_dir, images_test[i].id_ + '_SEG.mha'), True)
-        sitk.WriteImage(images_post_processed[i], os.path.join(result_dir, images_test[i].id_ + '_SEG-PP.mha'), True)
-
-    # use two writers to report the results
-    os.makedirs(result_dir, exist_ok=True)  # generate result directory, if it does not exists
-    result_file = os.path.join(result_dir, 'results.csv')
-    writer.CSVWriter(result_file).write(evaluator.results)
+        # sitk.WriteImage(images_prediction[i], os.path.join(result_dir, images_test[i].id_ + '_SEG.mha'), True)
+        # sitk.WriteImage(images_post_processed[i], os.path.join(result_dir, images_test[i].id_ + '_SEG-PP.mha'), True)
+        if save_segmentations:
+            out_seg = os.path.join(result_dir, images_test[i].id_ + '_SEG.mha')
+            out_pp = os.path.join(result_dir, images_test[i].id_ + '_SEG-PP.mha')
+            sitk.WriteImage(images_prediction[i], out_seg, True)
+            sitk.WriteImage(images_post_processed[i], out_pp, True)
+    if save_segmentations:
+        # use two writers to report the results
+        os.makedirs(result_dir, exist_ok=True)  # generate result directory, if it does not exists
+        result_file = os.path.join(result_dir, 'results.csv')
+        writer.CSVWriter(result_file).write(evaluator.results)
 
     print('\nSubject-wise results...')
     writer.ConsoleWriter().write(evaluator.results)
-
-    # report also mean and standard deviation among all subjects
-    result_summary_file = os.path.join(result_dir, 'results_summary.csv')
     functions = {'MEAN': np.mean, 'STD': np.std}
-    writer.CSVStatisticsWriter(result_summary_file, functions=functions).write(evaluator.results)
+
+    if save_segmentations:
+        # report also mean and standard deviation among all subjects
+        result_summary_file = os.path.join(result_dir, 'results_summary.csv')
+        writer.CSVStatisticsWriter(result_summary_file, functions=functions).write(evaluator.results)
     print('\nAggregated statistic results...')
     writer.ConsoleStatisticsWriter(functions=functions).write(evaluator.results)
 
+    # Extract detailed metric rows for this seed
+    detailed_rows = []
+    for r in evaluator.results:
+        subject = r.id_
+        label = r.label
+        metric = r.metric
+        value = float(r.value)
+
+        detailed_rows.append({
+            "model": model_type,
+            "seed": seed,
+            "subject": subject,
+            "label": label,
+            "metric": metric,
+            "value": value
+        })
+    
     # clear results such that the evaluator is ready for the next evaluation
     evaluator.clear()
 
+    return detailed_rows
 
 if __name__ == "__main__":
     """The program's entry point."""
@@ -283,5 +336,18 @@ if __name__ == "__main__":
         help='Enable debug prints during training and testing.'
     )
 
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=42,
+        help='Random seed for reproducibility.'
+    )
+
+    parser.add_argument(
+        '--multi_seed_runs',
+        type=int,
+        default=1,
+        help='Run pipeline multiple times with different seeds (for boxplot experiments).'
+    )
     args = parser.parse_args()
-    main(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir, args.model_type, args.debug)
+    main_wrapper(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir, args.model_type, args.debug, args.seed, args.multi_seed_runs)
