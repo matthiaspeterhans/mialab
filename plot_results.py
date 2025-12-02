@@ -16,13 +16,13 @@ label_dict = {
 }
 
 
-def load_csv_grouped_by_pp(csv_file, metric="DICE", model=None):
+def load_csv_grouped_by_pp(csv_file, metric="DICE"):
     """
     Load a CSV inside mia-result/, grouping values into pre and post
     based on 'PP' in the subject name.
 
     Expected CSV columns:
-        model, seed, subject, label, metric, value
+        seed, subject, label, metric, value
     """
     csv_path = os.path.join(base_path, csv_file)
     if not os.path.exists(csv_path):
@@ -39,9 +39,6 @@ def load_csv_grouped_by_pp(csv_file, metric="DICE", model=None):
                 raise ValueError("CSV missing label/metric/value columns")
 
             if row["metric"] != metric:
-                continue
-
-            if model is not None and row.get("model") != model:
                 continue
 
             label_name = row["label"]
@@ -84,14 +81,14 @@ def merge_pp(pre_data, post_data, pp_mode):
     return merged
 
 
-def plot_multiple_models(csv_list, metric="DICE", model=None, pp_mode="both"):
+def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
     n_models = len(csv_list)
 
     # ---------- CASE 1: only before or only after ----------
     if pp_mode in ("pre", "post"):
         datasets = []
         for csv_file in csv_list:
-            pre, post = load_csv_grouped_by_pp(csv_file, metric, model)
+            pre, post = load_csv_grouped_by_pp(csv_file, metric)
             
             if pp_mode == "pre":
                 datasets.append(pre)
@@ -147,8 +144,6 @@ def plot_multiple_models(csv_list, metric="DICE", model=None, pp_mode="both"):
         plt.ylabel(metric)
 
         title = f"{metric} comparison of {n_models} models"
-        if model:
-            title += f" (filtered model={model})"
         title += " – before post-processing" if pp_mode == "pre" else " – after post-processing"
 
         plt.title(title, fontsize=16, fontweight="bold")
@@ -166,7 +161,7 @@ def plot_multiple_models(csv_list, metric="DICE", model=None, pp_mode="both"):
     pre_list = []
     post_list = []
     for csv_file in csv_list:
-        pre, post = load_csv_grouped_by_pp(csv_file, metric, model)
+        pre, post = load_csv_grouped_by_pp(csv_file, metric)
         pre_list.append(pre)
         post_list.append(post)
 
@@ -295,11 +290,6 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--model", type=str, default=None,
-        help="Filter by specific model value (CSV column 'model')"
-    )
-
-    parser.add_argument(
         "--pp", type=str, choices=["both", "pre", "post"], default="both",
         help="PP mode based on 'PP' in subject: 'pre', 'post', or 'both' (pre+post side-by-side)"
     )
@@ -309,6 +299,5 @@ if __name__ == "__main__":
     plot_multiple_models(
         csv_list=args.csv,
         metric=args.metric,
-        model=args.model,
         pp_mode=args.pp
     )
