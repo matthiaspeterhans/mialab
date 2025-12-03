@@ -78,6 +78,11 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     except Exception:
         multi_process = False
         print('Using single processing.')
+
+    if os.name == 'nt' and multi_process:
+        print("This is a Windows system (or compatible)")
+        pre_process_params['atlas_dir'] = data_atlas_dir # pass atlas directory for multiprocessing
+    
     images = putil.pre_process_batch(crawler.data, pre_process_params, 
     multi_process=multi_process)
 

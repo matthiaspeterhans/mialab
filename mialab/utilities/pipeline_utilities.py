@@ -191,6 +191,12 @@ def pre_process(id_: str, paths: dict, **kwargs) -> structure.BrainImage:
 
     print('-' * 10, 'Processing', id_)
 
+    # Ensure atlas images are loaded in worker processes when Windows is used
+    if os.name == 'nt':  # Windows or compatible
+        atlas_dir = kwargs.get('atlas_dir', None)
+        if atlas_dir is not None:
+            load_atlas_images(atlas_dir)
+
     # load image
     path = paths.pop(id_, '')  # the value with key id_ is the root directory of the image
     path_to_transform = paths.pop(structure.BrainImageTypes.RegistrationTransform, '')
