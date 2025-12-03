@@ -117,10 +117,6 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
     data_train = np.concatenate([img.feature_matrix[0] for img in images])
     labels_train = np.concatenate([img.feature_matrix[1] for img in images]).squeeze()
 
-    #warnings.warn('Random forest parameters not properly set.')
-    # forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
-    #                                             n_estimators=1,
-    #                                             max_depth=5)
     start_time = timeit.default_timer()
     forest = None
     forest_large = None
@@ -135,14 +131,6 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
         forest.fit(data_train, labels_train)
 
     elif model_type == 'hierarchical':
-        # forest_large = hmodel.train_large_rf(images, debug=debug, seed=seed)
-
-        # # Stage 1 train predictions (needed for Stage 2)
-        # train_preds_large = [
-        #     forest_large.predict(img.feature_matrix[0]) 
-        #     for img in images
-        # ]
-        # forest_small = hmodel.train_small_rf(images, train_preds_large, debug=debug, seed=seed)
         n_features = images[0].feature_matrix[0].shape[1]
 
         forest_large = hmodel.train_large_rf(
@@ -231,21 +219,6 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
             images_prediction.append(image_prediction)
             images_probabilities.append(image_probabilities)
         elif model_type == 'hierarchical':
-            # # Stage 1 prediction
-            # pred_large = hmodel.predict_large(forest_large, img, debug=debug)
-            # # Stage 2 prediction
-            # pred_small, small_conf, roi_mask = hmodel.predict_small(forest_small, img, pred_large, debug=debug)
-            # # Fuse
-            # pred_final = hmodel.fuse_predictions(pred_large, pred_small, small_conf, roi_mask, debug=debug)
-            # # Convert to image
-            # image_prediction = hmodel.convert_to_image(pred_final, img.image_properties)
-            # image_probabilities = None  # not used for simple post-processing
-            # evaluator.evaluate(image_prediction,
-            #            img.images[structure.BrainImageTypes.GroundTruth],
-            #            img.id_)
-            # images_prediction.append(image_prediction)
-            # images_probabilities.append(None)
-
             # Stage 1 prediction
             pred_large = hmodel.predict_large(forest_large, img, debug=debug)
             # Stage 2 prediction with auto-context
@@ -254,7 +227,7 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
                 model_large=forest_large,
                 img=img,
                 pred_large=pred_large,
-                roi_mode="stage1",  # or "center"
+                roi_mode="stage1",  # "stage1" or "center"
                 debug=debug
             )
             # Fuse
@@ -263,7 +236,7 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
                 pred_small,
                 small_conf,
                 roi_mask,
-                conf_threshold=0.01,  # later tune this
+                conf_threshold=0.1,
                 debug=debug
             )
             # Convert to image
@@ -401,4 +374,3 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main_wrapper(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir, args.model_type, args.debug, args.seed, args.multi_seed_runs)
-
