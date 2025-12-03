@@ -117,10 +117,6 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
     data_train = np.concatenate([img.feature_matrix[0] for img in images])
     labels_train = np.concatenate([img.feature_matrix[1] for img in images]).squeeze()
 
-    #warnings.warn('Random forest parameters not properly set.')
-    # forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
-    #                                             n_estimators=1,
-    #                                             max_depth=5)
     start_time = timeit.default_timer()
     forest = None
     forest_large = None
@@ -131,31 +127,45 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
             n_estimators=50,
             max_depth=20,
             n_jobs=-1,
-            random_state=42)
+            random_state=seed)
         forest.fit(data_train, labels_train)
 
     elif model_type == 'hierarchical':
-        forest_large = hmodel.train_large_rf(images, debug=debug)
+        n_features = images[0].feature_matrix[0].shape[1]
 
-        # Stage 1 train predictions (needed for Stage 2)
-        train_preds_large = [
-            forest_large.predict(img.feature_matrix[0]) 
-            for img in images
-        ]
-        forest_small = hmodel.train_small_rf(images, train_preds_large, debug=debug)
+        forest_large = hmodel.train_large_rf(
+            images,
+            n_estimators=50,
+            max_depth=20,
+            max_features=n_features,
+            seed=seed,
+            debug=debug
+        )
+
+        forest_small = hmodel.train_small_rf(
+            images,
+            model_large=forest_large,
+            n_estimators=50,
+            max_depth=20,
+            max_features=n_features + len(forest_large.classes_),  # original + prob feats
+            seed=seed,
+            use_spatial_downsampling=True,
+            # roi_mode="stage1",   # or "center" to test disk ROI
+            debug=debug
+        )
     
     elif model_type == 'grouped':
         forest = GroupedRandomForest(max_features=images[0].feature_matrix[0].shape[1],
                                  n_estimators_large=50, 
                                  n_estimators_small=50,
                                  max_depth=20,
-                                 random_state=42)
+                                 random_state=seed)
         forest.fit(data_train, labels_train)
     
     elif model_type == 'random_subset_ensemble':
         forest = LabelSubsetEnsembleRF(n_models=8, n_estimators=50, max_depth=20,
                                     n_jobs=-1,
-                                    random_state=42,
+                                    random_state=seed,
                                     max_features=images[0].feature_matrix[0].shape[1],
                                     min_labels_per_model=2,
                                     max_labels_per_model=5)
@@ -211,29 +221,42 @@ def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, d
         elif model_type == 'hierarchical':
             # Stage 1 prediction
             pred_large = hmodel.predict_large(forest_large, img, debug=debug)
-            # Stage 2 prediction
-            pred_small, small_conf, roi_mask = hmodel.predict_small(forest_small, img, pred_large, debug=debug)
+            # Stage 2 prediction with auto-context
+            pred_small, small_conf, roi_mask = hmodel.predict_small(
+                model_small=forest_small,
+                model_large=forest_large,
+                img=img,
+                pred_large=pred_large,
+                roi_mode="stage1",  # "stage1" or "center"
+                debug=debug
+            )
             # Fuse
-            pred_final = hmodel.fuse_predictions(pred_large, pred_small, small_conf, roi_mask, debug=debug)
+            pred_final = hmodel.fuse_predictions(
+                pred_large,
+                pred_small,
+                small_conf,
+                roi_mask,
+                conf_threshold=0.1,
+                debug=debug
+            )
             # Convert to image
             image_prediction = hmodel.convert_to_image(pred_final, img.image_properties)
-            image_probabilities = None  # not used for simple post-processing
-            evaluator.evaluate(image_prediction,
-                       img.images[structure.BrainImageTypes.GroundTruth],
-                       img.id_)
+            image_probabilities = None  # you can keep it None; postprocessing wrapper handles dummy probs
+
+            evaluator.evaluate(
+                image_prediction,
+                img.images[structure.BrainImageTypes.GroundTruth],
+                img.id_
+            )
             images_prediction.append(image_prediction)
-            images_probabilities.append(None)
+            images_probabilities.append(image_probabilities)
         else:
             raise ValueError(f"Unknown model type: {model_type}")
         if debug:
             print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
     # post-process segmentation and evaluate with post-processing
-    if model_type == 'hierarchical':
-        # no post-processing at first while debugging
-        post_process_params = {'simple_post': False}
-    else:
-        post_process_params = {'simple_post': True}
+    post_process_params = {'simple_post': True}
     images_post_processed = putil.post_process_batch(images_test, images_prediction, images_probabilities, post_process_params, multi_process=multi_process)
 
     for i, img in enumerate(images_test):
