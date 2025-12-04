@@ -6,71 +6,74 @@ from sklearn.ensemble import RandomForestClassifier
 
 import mialab.data.structure as structure
 
-# 1: 'WhiteMatter'
-# 2: 'GreyMatter'
-# 3: 'Hippocampus'
-# 4: 'Amygdala'
-# 5: 'Thalamus'
+# Constants to align structure with other models
+BG = 0
+WM = 1
+GM = 2
+HYP = 3
+AMY = 4
+THAL = 5
+FOREGROUND_LABELS = [WM, GM, HYP, AMY, THAL]
+N_LABELS = 6
 
-def train_all(images, n_estimators=50, max_depth=20, debug: bool = False):
-
-    ''' One model per label (binary classifiers: label vs rest)'''
-
-    X = []
-    y = []
-
-    for img in images:
-        X.append(img.feature_matrix[0]) # features
-        y.append(img.feature_matrix[1].squeeze()) # GT labels
-    X = np.concatenate(X)
-    y = np.concatenate(y)
-    if debug:
-        unique, counts = np.unique(y, return_counts=True)
-        print("GT training distribution:", dict(zip(unique, counts)))
-
-    models = {}
-    for label in range(1,6): # labels 1 to 5
-        # Create binary labels for current label vs rest
-        y_binary = (y == label).astype(int)
-
-        if debug:
-            unique, counts = np.unique(y_binary, return_counts=True)
-            print(f"Training distribution for label {label} vs rest:", dict(zip(unique, counts)))
-
-        model = RandomForestClassifier(
-            max_features=images[0].feature_matrix[0].shape[1],
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            n_jobs=-1,
-            random_state=42
-        )
-        model.fit(X, y_binary)
-        models[label] = model
-
-    return models
-
-# Prediction function for per-label models
-def predict_all(models, img, debug: bool = False):
+class PerLabelRF:
     """
-    Predict using the per-label models.
-    For each label, get the probability map from the corresponding model.
-    Then assign the label with the highest probability at each voxel.
+    per-label random forest ensemble: one binary RF per foreground label.
+    Methods: fit(X, y), predict(X), predict_proba(X)
     """
+    def __init__(self, n_estimators=50, max_depth=20, random_state=42, n_jobs=-1, max_features=None, debug=False):
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.random_state = random_state
+        self.n_jobs = n_jobs
+        self.max_features = max_features
+        self.debug = debug
+        self.models_ = {} 
 
-    X = img.feature_matrix[0]  # features
-    shape = sitk.GetArrayFromImage(img.images[structure.BrainImageTypes.T1w]).shape
-    
-    prob_maps = []
+    def fit(self, X, y):
+        y = np.asarray(y).astype(np.int16)
+        if self.debug:
+            unique, counts = np.unique(y, return_counts=True)
+            print("GT training distribution:", dict(zip(unique, counts)))
 
-    for label, clf in models.items():
-        probs = clf.predict_proba(X)[:, 1]  # probability of the positive class
-        prob_map = probs.reshape(shape)
-        prob_maps.append(prob_map)
+        self.models_.clear()
+        for idx, label in enumerate(FOREGROUND_LABELS, start=1):
+            y_binary = (y == label).astype(int)
+            if self.debug:
+                uniq_b, cnt_b = np.unique(y_binary, return_counts=True)
+                print(f"Training distribution for label {label} vs rest:", dict(zip(uniq_b, cnt_b)))
+            clf = RandomForestClassifier(
+                n_estimators=self.n_estimators,
+                max_depth=self.max_depth,
+                n_jobs=self.n_jobs,
+                random_state=self.random_state + idx,
+                max_features=self.max_features
+            )
+            clf.fit(X, y_binary)
+            self.models_[label] = clf
+        return self
 
-    prob_maps = np.stack(prob_maps, axis=-1)  # shape: (H, W, D, num_labels)
-    predicted_labels = np.argmax(prob_maps, axis=-1) + 1  # +1 to match label indexing
+    def predict_proba(self, X):
+        n = X.shape[0]
+        # columns: [BG, WM, GM, HYP, AMY, THAL]
+        proba = np.zeros((n, N_LABELS), dtype=np.float32)
 
-    if debug:
-        print("Predicted labels shape:", predicted_labels.shape)
+        # Fill foreground probabilities from binary classifiers' positive class
+        for label in FOREGROUND_LABELS:
+            clf = self.models_.get(label, None)
+            if clf is None:
+                continue
+            p = clf.predict_proba(X)[:, 1]
+            proba[:, label] = p
 
-    return predicted_labels
+        # BG probability set to 0, then normalize rows
+        row_sum = proba.sum(axis=1, keepdims=True)
+        row_sum[row_sum == 0] = 1.0
+        proba /= row_sum
+        return proba
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return np.argmax(proba, axis=1)
+
+

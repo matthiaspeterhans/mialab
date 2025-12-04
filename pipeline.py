@@ -10,6 +10,7 @@ import timeit
 import warnings
 
 import numpy as np
+import pandas as pd
 import pymia.data.conversion as conversion
 import pymia.evaluation.writer as writer
 import SimpleITK as sitk
@@ -20,7 +21,9 @@ try:
     import mialab.utilities.file_access_utilities as futil
     import mialab.utilities.pipeline_utilities as putil
     from mialab.experiments import hierarchical_model as hmodel
-    from mialab.experiments import per_label_model as plmodel
+    from mialab.experiments.per_label_model import PerLabelRF
+    from mialab.experiments.grouped_random_forest import GroupedRandomForest
+    from mialab.experiments.label_subset_ensemble import LabelSubsetEnsembleRF
 except ImportError:
     # Append the MIALab root directory to Python path
     sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[0]), '..'))
@@ -29,6 +32,8 @@ except ImportError:
     import mialab.utilities.pipeline_utilities as putil
     from mialab.experiments import hierarchical_model as hmodel
     from mialab.experiments import per_label_model as plmodel
+    from mialab.experiments.grouped_random_forest import GroupedRandomForest
+    from mialab.experiments.label_subset_ensemble import LabelSubsetEnsembleRF
 
 LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.T2w,
@@ -36,8 +41,32 @@ LOADING_KEYS = [structure.BrainImageTypes.T1w,
                 structure.BrainImageTypes.BrainMask,
                 structure.BrainImageTypes.RegistrationTransform]  # the list of data we will load
 
+def main_wrapper(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str, model_type: str, debug: bool = False, seed: int = 42, multi_seed_runs: int = 1):
+    """Wrapper that allows multi-seed experiments."""
+    all_results = [] # aggregated list of rows to write to CSV
+    for run_idx in range(multi_seed_runs):
+        current_seed = seed + run_idx
+        print(f"\n========== Running seed {current_seed} ({run_idx+1}/{multi_seed_runs}) ==========\n")
+        np.random.seed(current_seed)
+        # run the original pipeline (but modified to RETURN results)
+        detailed_rows = main_single_run(
+            result_dir,
+            data_atlas_dir,
+            data_train_dir,
+            data_test_dir,
+            model_type,
+            debug,
+            current_seed,
+            multi_seed_runs
+        )
+        all_results.extend(detailed_rows)
+    df = pd.DataFrame(all_results)
 
-def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str, model_type: str, debug: bool = False):
+    out_path = os.path.join(result_dir, "multi_seed_results.csv")
+    df.to_csv(out_path, index=False)
+    print(f"\nSaved aggregated results to:\n{out_path}")
+
+def main_single_run(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_dir: str, model_type: str, debug: bool = False, seed: int = 42, multi_seed_runs: int = 1):
     """Brain tissue segmentation using decision forests.
 
     The main routine executes the medical image analysis pipeline:
@@ -95,47 +124,85 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
     data_train = np.concatenate([img.feature_matrix[0] for img in images])
     labels_train = np.concatenate([img.feature_matrix[1] for img in images]).squeeze()
 
-    #warnings.warn('Random forest parameters not properly set.')
-    # forest = sk_ensemble.RandomForestClassifier(max_features=images[0].feature_matrix[0].shape[1],
-    #                                             n_estimators=1,
-    #                                             max_depth=5)
     start_time = timeit.default_timer()
     forest = None
     forest_large = None
     forest_small = None
     if model_type == 'baseline':
-        print('-' * 5, 'Training baseline model...')
         forest = sk_ensemble.RandomForestClassifier(
             max_features=images[0].feature_matrix[0].shape[1],
             n_estimators=50,
             max_depth=20,
             n_jobs=-1,
-            random_state=42)
+            random_state=seed)
         forest.fit(data_train, labels_train)
 
     elif model_type == 'hierarchical':
-        print('-' * 5, 'Training hierarchical model...')
-        forest_large = hmodel.train_large_rf(images, debug=debug)
+        n_features = images[0].feature_matrix[0].shape[1]
 
-        # Stage 1 train predictions (needed for Stage 2)
-        train_preds_large = [
-            forest_large.predict(img.feature_matrix[0]) 
-            for img in images
-        ]
-        forest_small = hmodel.train_small_rf(images, train_preds_large, debug=debug)
+        forest_large = hmodel.train_large_rf(
+            images,
+            n_estimators=50,
+            max_depth=20,
+            max_features=n_features,
+            seed=seed,
+            debug=debug
+        )
+
+        forest_small = hmodel.train_small_rf(
+            images,
+            model_large=forest_large,
+            n_estimators=50,
+            max_depth=20,
+            max_features=n_features + len(forest_large.classes_),  # original + prob feats
+            seed=seed,
+            use_spatial_downsampling=True,
+            # roi_mode="stage1",   # or "center" to test disk ROI
+            debug=debug
+        )
+    
+    elif model_type == 'grouped':
+        forest = GroupedRandomForest(max_features=images[0].feature_matrix[0].shape[1],
+                                 n_estimators_large=50, 
+                                 n_estimators_small=50,
+                                 max_depth=20,
+                                 random_state=seed)
+        forest.fit(data_train, labels_train)
+    
+    elif model_type == 'random_subset_ensemble':
+        forest = LabelSubsetEnsembleRF(n_models=8, n_estimators=50, max_depth=20,
+                                    n_jobs=-1,
+                                    random_state=seed,
+                                    max_features=images[0].feature_matrix[0].shape[1],
+                                    min_labels_per_model=2,
+                                    max_labels_per_model=5)
+        forest.fit(data_train, labels_train)
 
     elif model_type == 'per_label':
-        print('-' * 5, 'Training per-label model...')
-        forest = plmodel.train_all(images, debug=debug)
+        n_features = images[0].feature_matrix[0].shape[1]
+        forest = PerLabelRF(
+            n_estimators=50,
+            max_depth=20,
+            random_state=seed,
+            n_jobs=-1,
+            max_features=n_features,
+            debug=debug
+        )
+        forest.fit(data_train, labels_train)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
-    print(' Time elapsed:', timeit.default_timer() - start_time, 's')
+    if debug:
+        print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
-    # create a result directory with timestamp
-    t = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    result_dir = os.path.join(result_dir, t)
-    os.makedirs(result_dir, exist_ok=True)
+    save_segmentations = (multi_seed_runs == 1) # create result directory only if saving segmentations
+    if save_segmentations:
+        # create a result directory with timestamp
+        t = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S') + f"_seed_{seed}" + f"_model_{model_type}"
+        result_dir = os.path.join(result_dir, t)
+        os.makedirs(result_dir, exist_ok=True)
+    else:
+        result_dir = None  # segmentations will not be saved
 
     print('-' * 5, 'Testing...')
 
@@ -159,7 +226,7 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
         print('-' * 10, 'Testing', img.id_)
 
         start_time = timeit.default_timer()
-        if model_type == 'baseline':
+        if model_type == 'baseline' or model_type == 'grouped' or model_type == 'random_subset_ensemble' or model_type == 'per_label':
             predictions = forest.predict(img.feature_matrix[0])
             probabilities = forest.predict_proba(img.feature_matrix[0])
             # convert prediction and probabilities back to SimpleITK images
@@ -173,38 +240,42 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
         elif model_type == 'hierarchical':
             # Stage 1 prediction
             pred_large = hmodel.predict_large(forest_large, img, debug=debug)
-            # Stage 2 prediction
-            pred_small, small_conf, roi_mask = hmodel.predict_small(forest_small, img, pred_large, debug=debug)
+            # Stage 2 prediction with auto-context
+            pred_small, small_conf, roi_mask = hmodel.predict_small(
+                model_small=forest_small,
+                model_large=forest_large,
+                img=img,
+                pred_large=pred_large,
+                roi_mode="stage1",  # "stage1" or "center"
+                debug=debug
+            )
             # Fuse
-            pred_final = hmodel.fuse_predictions(pred_large, pred_small, small_conf, roi_mask, debug=debug)
+            pred_final = hmodel.fuse_predictions(
+                pred_large,
+                pred_small,
+                small_conf,
+                roi_mask,
+                conf_threshold=0.1,
+                debug=debug
+            )
             # Convert to image
             image_prediction = hmodel.convert_to_image(pred_final, img.image_properties)
-            image_probabilities = None  # not used for simple post-processing
-            evaluator.evaluate(image_prediction,
-                       img.images[structure.BrainImageTypes.GroundTruth],
-                       img.id_)
-            images_prediction.append(image_prediction)
-            images_probabilities.append(None)
-        elif model_type == 'per_label':
-            predictions = plmodel.predict_all(forest, img, debug=debug)
-            # convert prediction and probabilities back to SimpleITK images
-            image_prediction = conversion.NumpySimpleITKImageBridge.convert(predictions.astype(np.uint8), img.image_properties)
-            image_probabilities = None  # not used for simple post-processing
-            # evaluate segmentation without post-processing
-            evaluator.evaluate(image_prediction, img.images[structure.BrainImageTypes.GroundTruth], img.id_)
+            image_probabilities = None  # you can keep it None; postprocessing wrapper handles dummy probs
 
+            evaluator.evaluate(
+                image_prediction,
+                img.images[structure.BrainImageTypes.GroundTruth],
+                img.id_
+            )
             images_prediction.append(image_prediction)
             images_probabilities.append(image_probabilities)
         else:
             raise ValueError(f"Unknown model type: {model_type}")
-        print(' Time elapsed:', timeit.default_timer() - start_time, 's')
+        if debug:
+            print(' Time elapsed:', timeit.default_timer() - start_time, 's')
 
     # post-process segmentation and evaluate with post-processing
-    if model_type == 'hierarchical':
-        # no post-processing at first while debugging
-        post_process_params = {'simple_post': False}
-    else:
-        post_process_params = {'simple_post': True}
+    post_process_params = {'simple_post': True}
     images_post_processed = putil.post_process_batch(images_test, images_prediction, images_probabilities, post_process_params, multi_process=multi_process)
 
     for i, img in enumerate(images_test):
@@ -212,35 +283,51 @@ def main(result_dir: str, data_atlas_dir: str, data_train_dir: str, data_test_di
                            img.id_ + '-PP')
 
         # save results
-        sitk.WriteImage(images_prediction[i], os.path.join(result_dir, images_test[i].id_ + '_SEG.mha'), True)
-        sitk.WriteImage(images_post_processed[i], os.path.join(result_dir, images_test[i].id_ + '_SEG-PP.mha'), True)
-
-    # use two writers to report the results
-    os.makedirs(result_dir, exist_ok=True)  # generate result directory, if it does not exists
-    result_file = os.path.join(result_dir, 'results.csv')
-    writer.CSVWriter(result_file).write(evaluator.results)
+        # sitk.WriteImage(images_prediction[i], os.path.join(result_dir, images_test[i].id_ + '_SEG.mha'), True)
+        # sitk.WriteImage(images_post_processed[i], os.path.join(result_dir, images_test[i].id_ + '_SEG-PP.mha'), True)
+        if save_segmentations:
+            out_seg = os.path.join(result_dir, images_test[i].id_ + '_SEG.mha')
+            out_pp = os.path.join(result_dir, images_test[i].id_ + '_SEG-PP.mha')
+            sitk.WriteImage(images_prediction[i], out_seg, True)
+            sitk.WriteImage(images_post_processed[i], out_pp, True)
+    if save_segmentations:
+        # use two writers to report the results
+        os.makedirs(result_dir, exist_ok=True)  # generate result directory, if it does not exists
+        result_file = os.path.join(result_dir, 'results.csv')
+        writer.CSVWriter(result_file).write(evaluator.results)
 
     print('\nSubject-wise results...')
     writer.ConsoleWriter().write(evaluator.results)
-
-    # report also mean and standard deviation among all subjects
-    result_summary_file = os.path.join(result_dir, 'results_summary.csv')
     functions = {'MEAN': np.mean, 'STD': np.std}
-    writer.CSVStatisticsWriter(result_summary_file, functions=functions).write(evaluator.results)
+
+    if save_segmentations:
+        # report also mean and standard deviation among all subjects
+        result_summary_file = os.path.join(result_dir, 'results_summary.csv')
+        writer.CSVStatisticsWriter(result_summary_file, functions=functions).write(evaluator.results)
     print('\nAggregated statistic results...')
     writer.ConsoleStatisticsWriter(functions=functions).write(evaluator.results)
 
+    # Extract detailed metric rows for this seed
+    detailed_rows = []
+    for r in evaluator.results:
+        subject = r.id_
+        label = r.label
+        metric = r.metric
+        value = float(r.value)
+
+        detailed_rows.append({
+            "model": model_type,
+            "seed": seed,
+            "subject": subject,
+            "label": label,
+            "metric": metric,
+            "value": value
+        })
+    
     # clear results such that the evaluator is ready for the next evaluation
     evaluator.clear()
 
-    # Save metadata about the test mode
-    try:
-        mode_file = os.path.join(result_dir, 'model.txt')
-        with open(mode_file, 'w', encoding='utf-8') as mf:
-            mf.write(f"Model_type: {model_type}\n")
-    except Exception:
-        warnings.warn('Could not write model.txt into result directory')
-
+    return detailed_rows
 
 if __name__ == "__main__":
     """The program's entry point."""
@@ -281,7 +368,7 @@ if __name__ == "__main__":
         '--model_type',
         type=str,
         default='baseline',
-        choices=['baseline', 'per_label', 'grouped', 'hierarchical'],
+        choices=['baseline', 'per_label', 'grouped', 'hierarchical', 'random_subset_ensemble'],
         help='Choose which segmentation model to run.'
     )
 
@@ -291,5 +378,18 @@ if __name__ == "__main__":
         help='Enable debug prints during training and testing.'
     )
 
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=42,
+        help='Random seed for reproducibility.'
+    )
+
+    parser.add_argument(
+        '--multi_seed_runs',
+        type=int,
+        default=1,
+        help='Run pipeline multiple times with different seeds (for boxplot experiments).'
+    )
     args = parser.parse_args()
-    main(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir, args.model_type, args.debug)
+    main_wrapper(args.result_dir, args.data_atlas_dir, args.data_train_dir, args.data_test_dir, args.model_type, args.debug, args.seed, args.multi_seed_runs)
