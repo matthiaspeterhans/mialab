@@ -146,7 +146,7 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
             for x, mean_val in zip(positions, means):
                 print(mean_val)
                 if not np.isnan(mean_val):
-                    offset_y_rel = -0.05 if mean_val > 0.65 else 0.05
+                    offset_y_rel = -0.1 if mean_val > 0.65 else 0.05
                     plt.text(
                         x,
                         mean_val + offset_y_rel,
@@ -259,7 +259,7 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
 
         for x, mean_val in zip(pos_before, means_before):
             if not np.isnan(mean_val):
-                offset_y_rel = -0.05 if mean_val > 0.65 else 0.05
+                offset_y_rel = -0.1 if mean_val > 0.65 else 0.05
                 plt.text(
                     x,
                     mean_val + offset_y_rel,
@@ -273,7 +273,7 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
 
         for x, mean_val in zip(pos_after, means_after):
             if not np.isnan(mean_val):
-                offset_y_rel = -0.05 if mean_val > 0.65 else 0.05
+                offset_y_rel = -0.1 if mean_val > 0.65 else 0.05
                 plt.text(
                     x,
                     mean_val + offset_y_rel,
