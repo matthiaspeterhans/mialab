@@ -175,8 +175,6 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
 
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f"plot.svg", format="svg", bbox_inches="tight")
-        plt.savefig("plot.pdf", format="pdf", bbox_inches="tight")
         plt.show()
         return
 
@@ -299,8 +297,6 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
 
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"plot.svg", format="svg", bbox_inches="tight")
-    plt.savefig("plot.pdf", format="pdf", bbox_inches="tight")
     plt.show()
 
 if __name__ == "__main__":
