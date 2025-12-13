@@ -4,6 +4,19 @@ import numpy as np
 import os
 import argparse
 import csv
+import matplotlib as mpl
+mpl.rcParams["pdf.fonttype"] = 42   # TrueType, Text bleibt editierbar
+mpl.rcParams["ps.fonttype"]  = 42
+mpl.rcParams["svg.fonttype"] = "none"
+mpl.rcParams.update({
+    "font.size": 20,          # Basisgröße
+    "axes.titlesize": 20,
+    "axes.labelsize": 20,
+    "xtick.labelsize": 20,
+    "ytick.labelsize": 20,
+    "legend.fontsize": 18,
+    "legend.fontsize": 16,
+})
 
 base_path = "mia-result"
 
@@ -14,6 +27,10 @@ label_dict = {
     "Amygdala": 4,
     "Thalamus": 5,
 }
+
+def model_name_from_csv(csv_file):
+    suffix = "_multi_seed_results.csv"
+    return csv_file.replace(suffix, "")
 
 
 def load_csv_grouped_by_pp(csv_file, metric="DICE"):
@@ -124,36 +141,42 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
 
             means = [np.mean(v) if v else np.nan for v in values]
             ymin, ymax = plt.ylim()
-            offset_y = (ymax - ymin) * 0.03
+            offset_y = (ymax - ymin) * 0.1
 
             for x, mean_val in zip(positions, means):
+                print(mean_val)
                 if not np.isnan(mean_val):
+                    offset_y_rel = -0.05 if mean_val > 0.65 else 0.05
                     plt.text(
                         x,
-                        mean_val + offset_y,
+                        mean_val + offset_y_rel,
                         f"{mean_val:.3f}",
                         ha="center",
                         va="bottom",
-                        fontsize=7,
+                        fontsize=15,
                         fontweight="bold",
                         bbox=dict(boxstyle="round,pad=0.1", facecolor="white", alpha=0.8),
                     )
 
         plt.xticks(x_centers, label_names, rotation=35)
-        plt.xlabel("Labels")
+    
         plt.ylabel(metric)
 
         title = f"{metric} comparison of {n_models} models"
         title += " – before post-processing" if pp_mode == "pre" else " – after post-processing"
 
-        plt.title(title, fontsize=16, fontweight="bold")
+        #plt.title(title, fontsize=16, fontweight="bold")
 
         for i, csv_file in enumerate(csv_list):
-            label_text = "before post-processing" if pp_mode == "pre" else "after post-processing"
-            plt.plot([], [], color=colors[i], label=f"{csv_file} ({label_text})")
+            model_name = model_name_from_csv(csv_file)
+            #label_text = "before post-processing" if pp_mode == "pre" else "after post-processing"
+            label_text = "pre" if pp_mode == "pre" else "post"
+            plt.plot([], [], color=colors[i], label=f"{model_name} ({label_text})")
 
         plt.legend()
         plt.tight_layout()
+        plt.savefig(f"plot.svg", format="svg", bbox_inches="tight")
+        plt.savefig("plot.pdf", format="pdf", bbox_inches="tight")
         plt.show()
         return
 
@@ -214,14 +237,12 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
             patch.set_alpha(1.0)
 
     plt.xticks(x_centers, label_names, rotation=35)
-    plt.xlabel("Labels")
     plt.ylabel(metric)
-    plt.title(f"{metric} before vs after post-processing for {n_models} models",
-              fontsize=16, fontweight="bold")
+    #plt.title(f"{metric} before vs after post-processing for {n_models} models",fontsize=16, fontweight="bold")
 
     # Annotate means
     ymin, ymax = plt.ylim()
-    offset_y = (ymax - ymin) * 0.03
+    offset_y = (ymax - ymin) * 0.1
 
     for model_index in range(n_models):
         color = colors[model_index]
@@ -240,38 +261,46 @@ def plot_multiple_models(csv_list, metric="DICE", pp_mode="both"):
 
         for x, mean_val in zip(pos_before, means_before):
             if not np.isnan(mean_val):
+                offset_y_rel = -0.05 if mean_val > 0.65 else 0.05
                 plt.text(
                     x,
-                    mean_val + offset_y,
+                    mean_val + offset_y_rel,
                     f"{mean_val:.3f}",
                     ha="center",
                     va="bottom",
-                    fontsize=7,
+                    fontsize=15,
                     fontweight="bold",
                     bbox=dict(boxstyle="round,pad=0.1", facecolor="white", alpha=0.85),
                 )
 
         for x, mean_val in zip(pos_after, means_after):
             if not np.isnan(mean_val):
+                offset_y_rel = -0.05 if mean_val > 0.65 else 0.05
                 plt.text(
                     x,
-                    mean_val + offset_y,
+                    mean_val + offset_y_rel,
                     f"{mean_val:.3f}",
                     ha="center",
                     va="bottom",
-                    fontsize=7,
+                    fontsize=15,
                     fontweight="bold",
                     bbox=dict(boxstyle="round,pad=0.1", facecolor="white", alpha=0.85),
                 )
 
     for i, csv_file in enumerate(csv_list):
+        model_name = model_name_from_csv(csv_file)
         plt.plot([], [], color=colors[i], alpha=0.5,
-                 label=f"{csv_file} (before post-processing)")
+                 #label=f"{model_name} (before post-processing)")
+                 label=f"{model_name} (pre)")
         plt.plot([], [], color=colors[i], alpha=1.0,
-                 label=f"{csv_file} (after post-processing)")
+                 #label=f"{model_name} (after post-processing)")
+                 label=f"{model_name} (post)")
+                 
 
     plt.legend()
     plt.tight_layout()
+    plt.savefig(f"plot.svg", format="svg", bbox_inches="tight")
+    plt.savefig("plot.pdf", format="pdf", bbox_inches="tight")
     plt.show()
 
 if __name__ == "__main__":
