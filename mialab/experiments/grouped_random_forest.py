@@ -52,7 +52,6 @@ class GroupedRandomForest:
         self.classes_small_ = list(self.forest_small.classes_)
         return self
 
-    @staticmethod
     def _safe_col(proba, classes, label, n):
         if label in classes:
             return proba[:, classes.index(label)].astype(np.float32)
