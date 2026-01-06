@@ -17,6 +17,9 @@ import mialab.data.structure as structure
 LARGE_LABELS = {1, 2, 5}  # WM, GM, Thalamus
 SMALL_LABELS = {3, 4}      # Hippocampus, Amygdala
 
+def _count_map(arr):
+    u, c = np.unique(arr, return_counts=True)
+    return dict(zip(u.tolist(), c.tolist()))
 
 #  Helper: build ROI from Stage-1 predictions
 def build_stage1_roi(pred_large, img, include_small_labels=True, dilation_iters=2, debug=False):
@@ -35,8 +38,10 @@ def build_stage1_roi(pred_large, img, include_small_labels=True, dilation_iters=
     """
     if include_small_labels:
         seed_labels = [1, 2, 3, 4, 5]
+        # seed_labels = [3, 4]
     else:
-        seed_labels = [1, 2, 5]
+        # seed_labels = [1, 2, 5]
+        seed_labels = [3, 4]
 
     roi_mask = np.isin(pred_large, seed_labels)
 
@@ -46,9 +51,15 @@ def build_stage1_roi(pred_large, img, include_small_labels=True, dilation_iters=
     roi_mask = roi_mask_3d.flatten()
 
     if debug:
-        print(f"[ROI] Stage-1 ROI size: {int(np.sum(roi_mask))} voxels "
+        n_roi = int(np.sum(roi_mask))
+        n_all = int(roi_mask.size)
+        print(f"[ROI] stage1-seed={seed_labels}, dilation={dilation_iters}")
+        print(f"[ROI] ROI size: {n_roi} voxels ({100.0*n_roi/max(1,n_all):.2f}% of image)"
               f"({np.mean(roi_mask) * 100:.2f}% of image)")
 
+        # show what Stage-1 predicted inside ROI (helps explain “where it looks”)
+        pred_in = pred_large[roi_mask]
+        print("[ROI] Stage-1 label dist inside ROI:", _count_map(pred_in))
     return roi_mask
 
 
@@ -81,8 +92,10 @@ def build_center_disk_roi(img, radius_fraction=0.4, debug=False):
     roi_mask = roi_mask_3d.flatten()
 
     if debug:
-        print(f"[ROI] Center-disk ROI size: {int(np.sum(roi_mask))} voxels "
-              f"({np.mean(roi_mask) * 100:.2f}% of image)")
+        n_roi = int(np.sum(roi_mask))
+        n_all = int(roi_mask.size)
+        print(f"[ROI] center-disk radius_fraction={radius_fraction}")
+        print(f"[ROI] ROI size: {n_roi} voxels ({100.0*n_roi/max(1,n_all):.2f}% of image)")
 
     return roi_mask
 
@@ -120,8 +133,8 @@ def train_large_rf(images,
     y = np.concatenate(y_list)
 
     if debug:
-        unique, counts = np.unique(y, return_counts=True)
-        print("[Stage-1] GT training distribution:", dict(zip(unique, counts)))
+        print("[Stage-1][train] GT distribution:", _count_map(y))
+        print(f"[Stage-1][train] X shape={X.shape}, features={X.shape[1]}")
 
     if max_features is None:
         max_features = X.shape[1]
@@ -165,10 +178,8 @@ def _augment_features_with_stage1_probs(X, probs_large, classes_large, debug=Fal
     X_aug = np.concatenate([X, probs_large], axis=1)
 
     if debug:
-        print(f"[Stage-2] Augmented features: original F={X.shape[1]}, "
-              f"Stage-1 prob dims={probs_large.shape[1]}, total={X_aug.shape[1]}")
-        print(f"[Stage-2] Stage-1 classes in probs_large: {classes_large}")
-
+        print(f"[Stage-2][auto-context] original F={X.shape[1]}, prob dims={probs_large.shape[1]}, total={X_aug.shape[1]}")
+        print(f"[Stage-2][auto-context] Stage-1 classes order: {classes_large}")
     return X_aug
 
 
@@ -201,7 +212,8 @@ def train_small_rf(images,
     y_all = []
 
     classes_large = model_large.classes_
-
+    kept_total = 0
+    pos_total = 0
     for img_idx, img in enumerate(images):
         X_orig = img.feature_matrix[0] # [N_samp, F]
         y_orig = img.feature_matrix[1].squeeze() # [N_samp]
@@ -210,12 +222,6 @@ def train_small_rf(images,
 
         # Stage-1 probabilities on this (sampled) feature set
         probs_large = model_large.predict_proba(X_orig)
-
-        if debug and img_idx == 0:
-            print("[Stage-2 train] X_orig shape:", X_orig.shape)
-            print("[Stage-2 train] y_orig shape:", y_orig.shape)
-            print("[Stage-2 train] image size (x,y,z):", img.image_properties.size)
-            print("[Stage-2 train] full voxel count:", np.prod(img.image_properties.size))
 
         # Augment features with Stage-1 probabilities (auto-context)
         X_aug = _augment_features_with_stage1_probs(
@@ -231,17 +237,21 @@ def train_small_rf(images,
             # keep voxels Stage-1 thinks are non-background (1,2,3,4,5)
             roi_mask = np.isin(pred_large_img, [1, 2, 3, 4, 5])
 
-            if debug and img_idx == 0:
-                print(f"[Stage-2 train] Sampled voxels: {len(pred_large_img)}")
-                print(f"[Stage-2 train] ROI (non-bg) voxels: "
-                      f"{np.sum(roi_mask)} ({np.mean(roi_mask) * 100:.2f}%)")
-
             keep_mask = (y_mod != 0) | roi_mask # keep all small (3,4) + tissue-like negatives
             X_use = X_aug[keep_mask]
             y_use = y_mod[keep_mask]
         else:
             X_use = X_aug
             y_use = y_mod
+
+        kept_total += int(np.sum(keep_mask))
+        pos_total += int(np.sum(y_use != 0))
+        if debug and img_idx == 0:
+            print(f"[Stage-2][train] First train img: sampled voxels={len(y_mod)}")
+            print(f"[Stage-2][train] Kept voxels={int(np.sum(keep_mask))} "
+                  f"({100.0*np.mean(keep_mask):.2f}%) via {'ROI negatives' if use_spatial_downsampling else 'no downsampling'}")
+            print("[Stage-2][train] y_mod dist (0/3/4):", _count_map(y_mod))
+            print("[Stage-2][train] y_use dist (0/3/4):", _count_map(y_use))
 
         X_all.append(X_use)
         y_all.append(y_use)
@@ -251,11 +261,12 @@ def train_small_rf(images,
 
     if len(X) == 0:
         raise RuntimeError("Stage-2 SMALL RF: no training samples at all.")
-
+    
     if debug:
-        unique, counts = np.unique(y, return_counts=True)
-        print("[Stage-2] small-tissue training distribution (0,3,4):",
-              dict(zip(unique, counts)))
+        print("[Stage-2][train] Final training dist (0/3/4):", _count_map(y))
+        print(f"[Stage-2][train] Total kept voxels={kept_total}, positives(3/4)={pos_total} "
+              f"({100.0*pos_total/max(1,kept_total):.4f}%)")
+        print(f"[Stage-2][train] X shape={X.shape}, features={X.shape[1]}")
 
     if max_features is None:
         max_features = X.shape[1]
@@ -295,8 +306,7 @@ def predict_large(model, img, debug=False):
     X = img.feature_matrix[0]
     pred = model.predict(X)
     if debug:
-        unique, counts = np.unique(pred, return_counts=True)
-        print("[Stage-1] prediction label distribution:", dict(zip(unique, counts)))
+        print("[Stage-1][predict] pred dist:", _count_map(pred))
     return pred
 
 
@@ -332,10 +342,15 @@ def predict_small(model_small,
                                     dilation_iters=2,
                                     debug=debug)
         if debug:
-            gt = img.feature_matrix[1].squeeze()  # GT labels for all voxels in test
-            roi_recall_hippo = np.mean(roi_mask[gt == 3]) if np.any(gt == 3) else np.nan
-            roi_recall_amyg  = np.mean(roi_mask[gt == 4]) if np.any(gt == 4) else np.nan
-            print(f"[ROI] recall hippo={roi_recall_hippo:.3f}, amyg={roi_recall_amyg:.3f}")
+            gt = img.feature_matrix[1].squeeze()
+            n_h = int(np.sum(gt == 3))
+            n_a = int(np.sum(gt == 4))
+            in_h = int(np.sum(roi_mask[gt == 3])) if n_h > 0 else 0
+            in_a = int(np.sum(roi_mask[gt == 4])) if n_a > 0 else 0
+            rec_h = (in_h / n_h) if n_h > 0 else np.nan
+            rec_a = (in_a / n_a) if n_a > 0 else np.nan
+            print(f"[ROI] GT Hip voxels={n_h}, in ROI={in_h}, recall={rec_h:.3f}")
+            print(f"[ROI] GT Amy voxels={n_a}, in ROI={in_a}, recall={rec_a:.3f}")
     elif roi_mode == "center":
         roi_mask = build_center_disk_roi(img, radius_fraction=0.4, debug=debug)
     else:
@@ -367,13 +382,12 @@ def predict_small(model_small,
         small_conf = np.max(probs_small[:, small_class_indices], axis=1)
 
     if debug:
-        if np.sum(roi_mask) > 0:
-            print("[Stage-2] mean small-conf inside ROI:",
-                  float(np.mean(small_conf[roi_mask])))
-        else:
-            print("[Stage-2] ROI empty!")
-        uniq2, cnt2 = np.unique(pred_small, return_counts=True)
-        print("[Stage-2] prediction label distribution:", dict(zip(uniq2, cnt2)))
+        inside = roi_mask
+        n_in = int(np.sum(inside))
+        print(f"[Stage-2][predict] voxels total={n_vox}, ROI voxels={n_in} ({100.0*n_in/max(1,n_vox):.2f}%)")
+        if n_in > 0:
+            print("[Stage-2][predict] mean small_conf inside ROI:", float(np.mean(small_conf[inside])))
+        print("[Stage-2][predict] pred dist:", _count_map(pred_small))
 
     return pred_small, small_conf, roi_mask
 
@@ -407,18 +421,31 @@ def fuse_predictions(pred_large,
     final = pred_large.copy()
 
     # replace where Stage-2 is confident and predicts small structure inside ROI
-    mask_replace = (small_conf > conf_threshold) & roi_mask & np.isin(pred_small, list(SMALL_LABELS))
+    mask_candidate = roi_mask & np.isin(pred_small, list(SMALL_LABELS))
+    mask_replace = mask_candidate & (small_conf > float(conf_threshold))
     final[mask_replace] = pred_small[mask_replace]
 
     if debug:
-        mask_small = np.isin(pred_small, [3, 4]) & roi_mask
-        print("[Fusion] small_conf min/mean/max on replaced candidates:",
-            float(np.min(small_conf[mask_small])),
-            float(np.mean(small_conf[mask_small])),
-            float(np.max(small_conf[mask_small])))
-        print("[Fusion] Voxels replaced by Stage-2:", int(np.sum(mask_replace)))
-        uniq_f, cnt_f = np.unique(final, return_counts=True)
-        print("[Fusion] Final label distribution:", dict(zip(uniq_f, cnt_f)))
+        n_roi = int(np.sum(roi_mask))
+        n_cand = int(np.sum(mask_candidate))
+        n_rep = int(np.sum(mask_replace))
+        print(f"[Fusion] conf_threshold={conf_threshold}")
+        print(f"[Fusion] ROI voxels={n_roi}, candidates (Stage2 says small in ROI)={n_cand}, replaced={n_rep} "
+              f"({100.0*n_rep/max(1,n_roi):.2f}% of ROI)")
+
+        # replacement breakdown
+        if n_rep > 0:
+            rep_labels = pred_small[mask_replace]
+            rep_dist = _count_map(rep_labels)
+            print("[Fusion] replaced label breakdown:", rep_dist)
+
+            conf_vals = small_conf[mask_replace]
+            print("[Fusion] small_conf on replaced: "
+                  f"min={float(np.min(conf_vals)):.3f}, mean={float(np.mean(conf_vals)):.3f}, max={float(np.max(conf_vals)):.3f}")
+        else:
+            print("[Fusion] no voxels replaced at this threshold.")
+
+        print("[Fusion] final pred dist:", _count_map(final))
 
     return final
 
